@@ -2,19 +2,30 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { dynamicTools, findToolResults, firstTurnInput, toolOutput, toolSignature } from '../lib/translate.js'
 
-test('maps DSH tool schemas without changing names or JSON Schema', () => {
+test('maps DSH tool schemas without changing names or JSON Schema and makes read failure semantics explicit', () => {
   const tools = [{
     name: 'Read',
     description: 'Read a file',
     parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
   }]
-  assert.deepEqual(dynamicTools(tools), [{
+  const mapped = dynamicTools(tools)
+  assert.match(mapped[0].description, /optional or one of several candidates/u)
+  assert.deepEqual(mapped, [{
     type: 'function',
     name: 'Read',
-    description: 'Read a file',
+    description: mapped[0].description,
     inputSchema: tools[0].parameters,
   }])
   assert.equal(toolSignature(tools), JSON.stringify(dynamicTools(tools)))
+})
+
+test('does not rewrite non-read DSH tool descriptions', () => {
+  const tools = [{
+    name: 'glob',
+    description: 'Find matching files',
+    parameters: { type: 'object' },
+  }]
+  assert.equal(dynamicTools(tools)[0].description, 'Find matching files')
 })
 
 test('finds only results matching pending Codex call ids', () => {

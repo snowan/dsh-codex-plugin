@@ -168,6 +168,63 @@ test('returns a DSH tool call, accepts its result, and resumes the same Codex tu
   await manager.dispose()
 })
 
+test('reports a failed DSH tool result to Codex and resumes the same turn', async () => {
+  let threadStart
+  let toolResponse
+  const runtime = scriptedRuntime((message, send) => {
+    if (message.method === 'initialize') send({ id: message.id, result: { userAgent: 'fake' } })
+    if (message.method === 'thread/start') {
+      threadStart = message.params
+      send({ id: message.id, result: { thread: { id: 'thread-error' }, model: 'gpt-test' } })
+    }
+    if (message.method === 'turn/start') {
+      send({ id: message.id, result: { turn: { id: 'turn-error' } } })
+      queueMicrotask(() => send({
+        id: 901,
+        method: 'item/tool/call',
+        params: { threadId: 'thread-error', turnId: 'turn-error', callId: 'call-error', namespace: null, tool: 'read', arguments: { file_path: 'missing' } },
+      }))
+    }
+    if (message.id === 901 && message.result !== undefined) {
+      toolResponse = message.result
+      queueMicrotask(() => {
+        send({ method: 'item/agentMessage/delta', params: { threadId: 'thread-error', turnId: 'turn-error', itemId: 'i-error', delta: 'The optional file is absent.' } })
+        send({ method: 'turn/completed', params: { threadId: 'thread-error', turn: { id: 'turn-error', status: 'completed', error: null } } })
+      })
+    }
+  })
+  const manager = new CodexBridgeManager(runtime, undefined, config())
+  const tools = [{ name: 'read', description: 'Read a file', parameters: { type: 'object' } }]
+  const first = await collect(manager.stream({
+    provider: 'codex-cli', model: 'gpt-test', sessionId: 'session-error', tools,
+    messages: [userMessage('inspect optional config')],
+  }))
+  assert.equal(first.at(-1)?.reason.kind, 'tool-calls')
+
+  const second = await collect(manager.stream({
+    provider: 'codex-cli', model: 'gpt-test', sessionId: 'session-error', tools,
+    messages: [
+      userMessage('inspect optional config'),
+      {
+        id: 'tool-error',
+        role: 'user',
+        source: { kind: 'tool', callId: 'call-error' },
+        content: [{ type: 'tool-result', toolCallId: 'call-error', content: [{ type: 'text', text: 'Error: not found' }], isError: true }],
+      },
+    ],
+  }))
+  assert.match(threadStart.developerInstructions, /Do not use a read tool to test/u)
+  assert.match(threadStart.dynamicTools[0].description, /failed DSH action/u)
+  assert.deepEqual(toolResponse, {
+    contentItems: [{ type: 'inputText', text: 'Error: not found' }],
+    success: false,
+  })
+  assert.equal(second.find(chunk => chunk.type === 'text-delta')?.text, 'The optional file is absent.')
+  assert.equal(second.at(-1)?.reason.kind, 'stop')
+  assert.equal(runtime.handles.length, 1)
+  await manager.dispose()
+})
+
 test('discovers every model-list page and caches the result', async () => {
   let listCalls = 0
   const runtime = scriptedRuntime((message, send) => {

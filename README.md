@@ -130,6 +130,12 @@ npm run doctor
 The doctor verifies the Codex version, ChatGPT login, App Server handshake, and
 live model discovery. It never prints credential material.
 
+If DSH shows a red `Read` card for a missing optional configuration file, that
+is a real DSH filesystem error rather than a Codex connection failure. The
+adapter tells Codex to check optional candidate paths with `glob` or a non-error
+existence test first, and to call `read` only for confirmed files. Genuine read
+failures remain visible instead of being silently converted to success.
+
 ## Develop and test
 
 ```sh

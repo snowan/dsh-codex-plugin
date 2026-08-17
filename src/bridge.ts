@@ -31,6 +31,8 @@ const CLIENT_INSTRUCTIONS = [
   'Use only dynamic tools supplied by the DSH client for external actions.',
   'Do not use Codex-native shell, file, patch, MCP, browser, or delegation tools.',
   'When a DSH tool is appropriate, call it and wait for its result.',
+  'Do not use a read tool to test whether an optional or candidate path exists. First use glob or a non-error bash existence test when available, then read only confirmed matches.',
+  'Treat a successful DSH tool result as authoritative and continue the current task; do not repeat the completed action or question unless the result is missing or ambiguous.',
 ].join('\n')
 
 const DSH_OWNED_TOOL_CONFIG = {
