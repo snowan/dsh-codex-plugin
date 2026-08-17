@@ -39,6 +39,17 @@ export interface CodexToolOutputImage {
 
 export type CodexToolOutput = CodexToolOutputText | CodexToolOutputImage
 
+const READ_TOOL_GUIDANCE = [
+  'DSH adapter guidance: use this tool only for a path that is expected to exist.',
+  'When a path is optional or one of several candidates, first check existence with glob or a non-error bash test (when available), then read only confirmed matches.',
+  'A missing path is a failed DSH action and is shown as an error to the user.',
+].join(' ')
+
+function dynamicToolDescription(tool: ToolSchema): string {
+  if (!/^read(?:_file)?$/iu.test(tool.name)) return tool.description
+  return `${tool.description}\n\n${READ_TOOL_GUIDANCE}`
+}
+
 export function dynamicTools(tools: readonly ToolSchema[] | undefined): CodexDynamicTool[] {
   return (tools ?? []).map((tool) => {
     if (!/^[a-zA-Z0-9_-]{1,128}$/u.test(tool.name)) {
@@ -47,7 +58,7 @@ export function dynamicTools(tools: readonly ToolSchema[] | undefined): CodexDyn
     return {
       type: 'function',
       name: tool.name,
-      description: tool.description,
+      description: dynamicToolDescription(tool),
       inputSchema: structuredClone(tool.parameters),
     }
   })
