@@ -101,8 +101,8 @@ profile's `cordis.patch.yml`:
 - id: llm-codex-cli
   name: '@snowan/dsh-codex-plugin'
   config:
-        codexCommand: codex
-        allowCodexNativeTools: false
+    codexCommand: codex
+    allowCodexNativeTools: false
     cwd: /absolute/workspace/path
     contextWindow: 200000
     modelCacheMs: 300000
