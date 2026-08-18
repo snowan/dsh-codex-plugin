@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PassThrough, Writable } from 'node:stream'
-import { CodexBridgeManager } from '../lib/bridge.js'
+import { CodexBridgeManager, CodexSessionLostError } from '../lib/bridge.js'
 
 function scriptedRuntime(script) {
   const handles = []
@@ -15,6 +15,13 @@ function scriptedRuntime(script) {
       let closed = false
       const done = new Promise(resolve => { complete = resolve })
       const send = message => stdout.write(`${JSON.stringify(message)}\n`)
+      const close = (exitCode = 0) => {
+        if (closed) return
+        closed = true
+        stdout.end()
+        stdin.end()
+        complete({ exitCode, signal: null })
+      }
       const stdin = new Writable({
         write(chunk, _encoding, callback) {
           input += chunk.toString()
@@ -35,13 +42,8 @@ function scriptedRuntime(script) {
         stderr: undefined,
         collected: {},
         done,
-        terminate() {
-          if (closed) return
-          closed = true
-          stdout.end()
-          stdin.end()
-          complete({ exitCode: 0, signal: null })
-        },
+        terminate: () => close(),
+        crash: () => close(1),
         async waitForExit() { return true },
       }
       handles.push(handle)
@@ -286,5 +288,102 @@ test('starts a new App Server when a DSH session changes its tool catalog', asyn
     tools: [{ name: 'Read', description: 'read', parameters: { type: 'object' } }],
   }))
   assert.equal(processNumber, 2)
+  await manager.dispose()
+})
+
+test('starts a fresh App Server when the retained client closed between turns', async () => {
+  const runtime = scriptedRuntime((message, send) => {
+    const processNumber = runtime.handles.length
+    if (message.method === 'initialize') send({ id: message.id, result: { userAgent: 'fake' } })
+    if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: `thread-recovery-${processNumber}` }, model: 'gpt-test' } })
+    }
+    if (message.method === 'turn/start') {
+      const turnId = `turn-recovery-${processNumber}`
+      send({ id: message.id, result: { turn: { id: turnId } } })
+      queueMicrotask(() => {
+        send({ method: 'item/agentMessage/delta', params: { threadId: `thread-recovery-${processNumber}`, turnId, itemId: `i-${processNumber}`, delta: `process-${processNumber}` } })
+        send({ method: 'turn/completed', params: { threadId: `thread-recovery-${processNumber}`, turn: { id: turnId, status: 'completed', error: null } } })
+      })
+    }
+  })
+  const manager = new CodexBridgeManager(runtime, undefined, config())
+  const first = await collect(manager.stream({
+    provider: 'codex-cli', model: 'gpt-test', sessionId: 'closed-between-turns', messages: [userMessage('one')],
+  }))
+  assert.equal(first.find(chunk => chunk.type === 'text-delta')?.text, 'process-1')
+
+  runtime.handles[0].crash()
+  await new Promise(resolve => setImmediate(resolve))
+
+  const second = await collect(manager.stream({
+    provider: 'codex-cli', model: 'gpt-test', sessionId: 'closed-between-turns', messages: [userMessage('two')],
+  }))
+  assert.equal(second.find(chunk => chunk.type === 'text-delta')?.text, 'process-2')
+  assert.equal(runtime.handles.length, 2)
+  await manager.dispose()
+})
+
+test('invalidates a closed pending-tool session with a stable session-loss error', async () => {
+  const runtime = scriptedRuntime((message, send) => {
+    const processNumber = runtime.handles.length
+    if (message.method === 'initialize') send({ id: message.id, result: { userAgent: 'fake' } })
+    if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: `thread-pending-${processNumber}` }, model: 'gpt-test' } })
+    }
+    if (message.method === 'turn/start') {
+      const turnId = `turn-pending-${processNumber}`
+      send({ id: message.id, result: { turn: { id: turnId } } })
+      if (processNumber === 1) {
+        queueMicrotask(() => send({
+          id: 910,
+          method: 'item/tool/call',
+          params: { threadId: 'thread-pending-1', turnId, callId: 'call-lost', namespace: null, tool: 'Read', arguments: { path: 'package.json' } },
+        }))
+      } else {
+        queueMicrotask(() => send({
+          method: 'turn/completed',
+          params: { threadId: `thread-pending-${processNumber}`, turn: { id: turnId, status: 'completed', error: null } },
+        }))
+      }
+    }
+  })
+  const manager = new CodexBridgeManager(runtime, undefined, config())
+  const tools = [{ name: 'Read', description: 'Read a file', parameters: { type: 'object' } }]
+  const first = await collect(manager.stream({
+    provider: 'codex-cli', model: 'gpt-test', sessionId: 'pending-crash', tools, messages: [userMessage('read')],
+  }))
+  assert.equal(first.at(-1)?.reason.kind, 'tool-calls')
+
+  runtime.handles[0].crash()
+  await new Promise(resolve => setImmediate(resolve))
+
+  await assert.rejects(
+    collect(manager.stream({
+      provider: 'codex-cli', model: 'gpt-test', sessionId: 'pending-crash', tools,
+      messages: [
+        userMessage('read'),
+        {
+          id: 'lost-result',
+          role: 'user',
+          source: { kind: 'tool', callId: 'call-lost' },
+          content: [{ type: 'tool-result', toolCallId: 'call-lost', content: [{ type: 'text', text: 'late' }], isError: false }],
+        },
+      ],
+    })),
+    error => {
+      assert.equal(error instanceof CodexSessionLostError, true)
+      assert.equal(error.code, 'CODEX_SESSION_LOST')
+      assert.deepEqual(error.pendingCallIds, ['call-lost'])
+      assert.equal(error.exitCode, 1)
+      return true
+    },
+  )
+
+  const recovered = await collect(manager.stream({
+    provider: 'codex-cli', model: 'gpt-test', sessionId: 'pending-crash', tools, messages: [userMessage('retry cleanly')],
+  }))
+  assert.equal(recovered.at(-1)?.reason.kind, 'stop')
+  assert.equal(runtime.handles.length, 2)
   await manager.dispose()
 })

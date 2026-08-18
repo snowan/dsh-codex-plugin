@@ -4,7 +4,7 @@ import z from '@deepseek-ai/schemastery'
 import { CODEX_PROVIDER, CodexAdapter } from './adapter.js'
 
 export { CODEX_PROVIDER, CodexAdapter } from './adapter.js'
-export { CodexBridgeManager } from './bridge.js'
+export { CodexBridgeManager, CodexSessionLostError } from './bridge.js'
 export { AppServerClient, RpcResponseError } from './rpc-client.js'
 export type { ReplayState } from './protocol.js'
 

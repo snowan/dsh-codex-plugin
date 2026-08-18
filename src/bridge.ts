@@ -7,7 +7,7 @@ import {
   type TokenUsage,
 } from '@deepseek-ai/dsh-llm'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import type { AppServerClient, AppServerEvent } from './rpc-client.js'
+import type { AppServerClient, AppServerCloseOutcome, AppServerEvent } from './rpc-client.js'
 import {
   isRecord,
   type CodexModel,
@@ -88,8 +88,35 @@ export interface BridgeConfig extends ProcessConfig {
   sessionIdleMs: number
 }
 
+export class CodexSessionLostError extends Error {
+  readonly name = 'CodexSessionLostError'
+  readonly code = 'CODEX_SESSION_LOST'
+
+  constructor(
+    readonly pendingCallIds: string[],
+    readonly exitCode: number | null,
+    readonly signal: NodeJS.Signals | null,
+    options?: ErrorOptions,
+  ) {
+    const detail = pendingCallIds.length === 0
+      ? 'before the turn reached a durable boundary'
+      : `while waiting for DSH tool result(s): ${pendingCallIds.join(', ')}`
+    super(`Codex App Server session was lost ${detail} (exit=${String(exitCode)}, signal=${String(signal)})`, options)
+  }
+}
+
 function sessionKey(options: GenerateOptions): string {
   return options.sessionId ?? `oneshot:${randomUUID()}`
+}
+
+function sessionLost(state: SessionState, cause?: Error): CodexSessionLostError {
+  const outcome: AppServerCloseOutcome = state.client.closeOutcome ?? { exitCode: null, signal: null }
+  return new CodexSessionLostError(
+    [...state.pending.keys()],
+    outcome.exitCode,
+    outcome.signal,
+    cause === undefined ? undefined : { cause },
+  )
 }
 
 function paramsOf<T>(event: AppServerEvent): T | undefined {
@@ -147,6 +174,13 @@ export class CodexBridgeManager {
     this.#evictIdle()
     const key = sessionKey(options)
     let state = this.#sessions.get(key)
+    if (state !== undefined && state.client.closed) {
+      const lost = sessionLost(state)
+      const hadPendingTools = state.pending.size > 0
+      await this.#disposeState(key, state)
+      state = undefined
+      if (hadPendingTools) throw lost
+    }
     if (state !== undefined && state.tools !== toolSignature(options.tools)) {
       await this.#disposeState(key, state)
       state = undefined
@@ -176,7 +210,7 @@ export class CodexBridgeManager {
         state.turnId = started.turn.id
         state.turnCount += 1
       }
-      yield* this.#consumeTurn(state, options)
+      yield* this.#consumeTurn(key, state, options)
     } finally {
       state.busy = false
       state.lastUsedAt = Date.now()
@@ -243,7 +277,7 @@ export class CodexBridgeManager {
     }
   }
 
-  async *#consumeTurn(state: SessionState, options: GenerateOptions): AsyncIterable<StreamChunk> {
+  async *#consumeTurn(key: string, state: SessionState, options: GenerateOptions): AsyncIterable<StreamChunk> {
     let nextIndex = 0
     let textIndex: number | undefined
     let text = ''
@@ -284,9 +318,15 @@ export class CodexBridgeManager {
       }
 
       if (event.type === 'closed') {
-        throw new Error(`Codex App Server exited during a turn (exit=${String(event.exitCode)}, signal=${String(event.signal)})`)
+        const lost = sessionLost(state)
+        await this.#disposeState(key, state)
+        throw lost
       }
-      if (event.type === 'protocol-error') throw event.error
+      if (event.type === 'protocol-error') {
+        const lost = sessionLost(state, event.error)
+        await this.#disposeState(key, state)
+        throw lost
+      }
       if (event.type === 'request') {
         if (event.value.method !== 'item/tool/call') {
           state.client.respondError(event.value.id, -32601, `DSH does not implement Codex server request ${event.value.method}`)
