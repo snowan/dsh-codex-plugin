@@ -558,3 +558,33 @@ test('manager disposal terminates retained sessions and cancels their idle work'
   await new Promise(resolve => setTimeout(resolve, 50))
   assert.deepEqual(runtime.handles.map(handle => handle.isClosed()), [true, true])
 })
+
+test('prefers the request workspace and falls back to the configured cwd', async () => {
+  const threadCwds = []
+  let turnNumber = 0
+  const runtime = scriptedRuntime((message, send) => {
+    if (message.method === 'initialize') send({ id: message.id, result: { userAgent: 'fake' } })
+    if (message.method === 'thread/start') {
+      threadCwds.push(message.params.cwd)
+      send({ id: message.id, result: { thread: { id: `thread-workspace-${threadCwds.length}` }, model: 'gpt-test' } })
+    }
+    if (message.method === 'turn/start') {
+      turnNumber += 1
+      const turnId = `turn-workspace-${turnNumber}`
+      send({ id: message.id, result: { turn: { id: turnId } } })
+      queueMicrotask(() => send({
+        method: 'turn/completed',
+        params: { threadId: message.params.threadId, turn: { id: turnId, status: 'completed', error: null } },
+      }))
+    }
+  })
+  const manager = new CodexBridgeManager(runtime, undefined, config())
+  await collect(manager.stream({
+    provider: 'codex-cli', model: 'gpt-test', sessionId: 'workspace-specific', cwd: '/sessions/a', messages: [userMessage('a')],
+  }))
+  await collect(manager.stream({
+    provider: 'codex-cli', model: 'gpt-test', sessionId: 'workspace-fallback', messages: [userMessage('b')],
+  }))
+  assert.deepEqual(threadCwds, ['/sessions/a', '/workspace'])
+  await manager.dispose()
+})

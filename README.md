@@ -18,6 +18,7 @@ of another DSH Codex plugin. See [Independent implementation](docs/INDEPENDENCE.
 - Multi-step tool continuation on the same Codex turn
 - DSH image attachments as inline Codex image inputs
 - Token and cache-usage normalization
+- Per-session Codex workspaces with a configured fallback
 - DSH bundle install that switches new agents to `codex-cli`
 - Managed subprocess cleanup, cancellation, and idle-session eviction
 
@@ -113,7 +114,7 @@ profile's `cordis.patch.yml`:
 | Field | Default | Purpose |
 | --- | ---: | --- |
 | `codexCommand` | `codex` | Executable resolved by DSH's subprocess runtime |
-| `cwd` | DSH process cwd | Working directory given to Codex threads |
+| `cwd` | DSH process cwd | Fallback when a request has no session workspace |
 | `env` | `{}` | Explicit additions to Codex's child environment |
 | `allowCodexNativeTools` | `false` | Keep actions on DSH's dynamic-tool plane |
 | `contextWindow` | `200000` | Conservative capacity advertised to DSH |
@@ -159,8 +160,9 @@ requires the existing Codex login and makes live model requests.
   reconstructs a fresh thread from DSH history.
 - The adapter serializes calls within one DSH session. Independent sessions use
   independent App Server processes.
-- DSH's `cwd` is not currently part of `GenerateOptions`; configure `cwd` when
-  DSH is launched outside the intended workspace.
+- The adapter prefers a request's optional `GenerateOptions.cwd` when starting
+  a Codex thread. DSH releases that do not forward a session workspace use the
+  configured `cwd` fallback.
 - Codex-native shell, apps, MCP, browser, and related feature surfaces are
   disabled by default so DSH owns the durable action policy and audit trail.
   Set `allowCodexNativeTools: true` only when that extra action plane is wanted.

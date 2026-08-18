@@ -79,6 +79,8 @@ interface ThreadStartResponse {
   model: string
 }
 
+type GenerateOptionsWithWorkspace = GenerateOptions & { readonly cwd?: string }
+
 interface TurnStartResponse {
   turn: { id: string }
 }
@@ -243,7 +245,7 @@ export class CodexBridgeManager {
     try {
       const started = await client.request<ThreadStartResponse>('thread/start', {
         model: options.model,
-        cwd: this.config.cwd,
+        cwd: (options as GenerateOptionsWithWorkspace).cwd ?? this.config.cwd,
         approvalPolicy: 'never',
         sandbox: 'read-only',
         baseInstructions: options.system ?? null,
