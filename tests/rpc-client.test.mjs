@@ -65,9 +65,13 @@ test('routes responses, notifications, and server requests independently', async
 test('rejects a pending request when the process closes', async () => {
   const handle = fakeHandle(() => undefined)
   const client = new AppServerClient(handle)
+  assert.equal(client.closed, false)
+  assert.equal(client.closeOutcome, undefined)
   const pending = client.request('never', {})
   client.terminate()
   await assert.rejects(pending, /closed/u)
+  assert.equal(client.closed, true)
+  assert.deepEqual(client.closeOutcome, { exitCode: 0, signal: null })
 })
 
 test('parses a JSON-RPC response split across stdout chunks', async () => {

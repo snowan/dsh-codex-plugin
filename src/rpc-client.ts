@@ -17,6 +17,11 @@ export type AppServerEvent =
   | { type: 'closed'; exitCode: number | null; signal: NodeJS.Signals | null }
   | { type: 'protocol-error'; error: Error }
 
+export interface AppServerCloseOutcome {
+  exitCode: number | null
+  signal: NodeJS.Signals | null
+}
+
 interface PendingRequest {
   resolve: (result: unknown) => void
   reject: (error: Error) => void
@@ -41,6 +46,7 @@ export class AppServerClient {
   #nextId = 1
   #buffer = ''
   #closed = false
+  #closeOutcome: AppServerCloseOutcome | undefined
 
   constructor(handle: SubprocessHandle) {
     if (handle.stdin === undefined || handle.stdout === undefined) {
@@ -58,6 +64,14 @@ export class AppServerClient {
 
   get pid(): number {
     return this.#handle.pid
+  }
+
+  get closed(): boolean {
+    return this.#closed
+  }
+
+  get closeOutcome(): Readonly<AppServerCloseOutcome> | undefined {
+    return this.#closeOutcome === undefined ? undefined : { ...this.#closeOutcome }
   }
 
   request<T>(method: string, params: unknown, signal?: AbortSignal): Promise<T> {
@@ -170,6 +184,7 @@ export class AppServerClient {
   #close(exitCode: number | null, signal: NodeJS.Signals | null): void {
     if (this.#closed) return
     this.#closed = true
+    this.#closeOutcome = { exitCode, signal }
     const error = new Error(`Codex App Server closed (exit=${String(exitCode)}, signal=${String(signal)})`)
     for (const pending of this.#pending.values()) {
       pending.cleanup()

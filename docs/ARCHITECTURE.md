@@ -47,7 +47,11 @@ While the process is live, Codex owns its thread history and DSH owns the
 durable session log. The adapter returns a small JSON replay marker containing
 bridge, thread, turn, and pending-call identities. If the in-memory process is
 gone, the next request seeds a new Codex thread with a canonical transcript
-derived from the DSH message history.
+derived from the DSH message history. If the process exits while a dynamic-tool
+request is pending, that bidirectional request cannot be recreated: the adapter
+invalidates the closed session and returns `CODEX_SESSION_LOST` with the pending
+call ids. A later clean request can then start a fresh thread without reusing
+the closed transport.
 
 ## Safety boundary
 

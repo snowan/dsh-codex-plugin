@@ -153,9 +153,10 @@ requires the existing Codex login and makes live model requests.
 - Dynamic tools are an experimental Codex App Server API, so a future Codex
   release can require protocol changes. The package pins `@openai/codex` and
   tests against CLI `0.147.0`.
-- A pending DSH tool call is kept in process memory. Restarting DSH while a tool
-  call is pending cannot resume that exact App Server request; the next clean
-  user turn reconstructs a fresh thread from DSH history.
+- A pending DSH tool call is kept in process memory. If its App Server exits,
+  the adapter returns `CODEX_SESSION_LOST` with the affected call ids instead
+  of writing the result to a closed transport. The next clean user turn
+  reconstructs a fresh thread from DSH history.
 - The adapter serializes calls within one DSH session. Independent sessions use
   independent App Server processes.
 - DSH's `cwd` is not currently part of `GenerateOptions`; configure `cwd` when
