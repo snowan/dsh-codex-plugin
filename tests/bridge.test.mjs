@@ -81,6 +81,15 @@ async function collect(iterable) {
   return chunks
 }
 
+async function waitFor(predicate, timeoutMs = 500) {
+  const deadline = performance.now() + timeoutMs
+  while (!predicate()) {
+    if (performance.now() >= deadline) return false
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  return true
+}
+
 test('streams Codex text and disjoint token usage as a DSH response', async () => {
   const runtime = scriptedRuntime((message, send) => {
     if (message.method === 'initialize') send({ id: message.id, result: { userAgent: 'fake' } })
@@ -482,4 +491,82 @@ test('invalidates the App Server when abort happens before turn/start returns an
   assert.equal(chunks.at(-1)?.reason.kind, 'aborted')
   assert.equal(runtime.handles[0].isClosed(), true)
   await manager.dispose()
+})
+
+test('terminates an idle session at its deadline without requiring another stream', async () => {
+  const runtime = scriptedRuntime((message, send) => {
+    if (message.method === 'initialize') send({ id: message.id, result: { userAgent: 'fake' } })
+    if (message.method === 'thread/start') send({ id: message.id, result: { thread: { id: 'thread-idle' }, model: 'gpt-test' } })
+    if (message.method === 'turn/start') {
+      send({ id: message.id, result: { turn: { id: 'turn-idle' } } })
+      queueMicrotask(() => send({
+        method: 'turn/completed',
+        params: { threadId: 'thread-idle', turn: { id: 'turn-idle', status: 'completed', error: null } },
+      }))
+    }
+  })
+  const manager = new CodexBridgeManager(runtime, undefined, { ...config(), sessionIdleMs: 30 })
+  await collect(manager.stream({
+    provider: 'codex-cli', model: 'gpt-test', sessionId: 'idle-deadline', messages: [userMessage('one')],
+  }))
+  assert.equal(runtime.handles[0].isClosed(), false)
+  assert.equal(await waitFor(() => runtime.handles[0].isClosed()), true)
+  await manager.dispose()
+})
+
+test('rearms the idle deadline when a retained session is reused', async () => {
+  let turnNumber = 0
+  const runtime = scriptedRuntime((message, send) => {
+    if (message.method === 'initialize') send({ id: message.id, result: { userAgent: 'fake' } })
+    if (message.method === 'thread/start') send({ id: message.id, result: { thread: { id: 'thread-rearm' }, model: 'gpt-test' } })
+    if (message.method === 'turn/start') {
+      turnNumber += 1
+      const turnId = `turn-rearm-${turnNumber}`
+      send({ id: message.id, result: { turn: { id: turnId } } })
+      queueMicrotask(() => send({
+        method: 'turn/completed',
+        params: { threadId: 'thread-rearm', turn: { id: turnId, status: 'completed', error: null } },
+      }))
+    }
+  })
+  const manager = new CodexBridgeManager(runtime, undefined, { ...config(), sessionIdleMs: 120 })
+  await collect(manager.stream({
+    provider: 'codex-cli', model: 'gpt-test', sessionId: 'idle-rearm', messages: [userMessage('one')],
+  }))
+  await new Promise(resolve => setTimeout(resolve, 80))
+  await collect(manager.stream({
+    provider: 'codex-cli', model: 'gpt-test', sessionId: 'idle-rearm', messages: [userMessage('two')],
+  }))
+  await new Promise(resolve => setTimeout(resolve, 70))
+  assert.equal(runtime.handles[0].isClosed(), false)
+  assert.equal(runtime.handles.length, 1)
+  assert.equal(await waitFor(() => runtime.handles[0].isClosed()), true)
+  await manager.dispose()
+})
+
+test('manager disposal terminates retained sessions and cancels their idle work', async () => {
+  const runtime = scriptedRuntime((message, send) => {
+    if (message.method === 'initialize') send({ id: message.id, result: { userAgent: 'fake' } })
+    if (message.method === 'thread/start') send({ id: message.id, result: { thread: { id: `thread-${runtime.handles.length}` }, model: 'gpt-test' } })
+    if (message.method === 'turn/start') {
+      const turnId = `turn-${runtime.handles.length}`
+      send({ id: message.id, result: { turn: { id: turnId } } })
+      queueMicrotask(() => send({
+        method: 'turn/completed',
+        params: { threadId: `thread-${runtime.handles.length}`, turn: { id: turnId, status: 'completed', error: null } },
+      }))
+    }
+  })
+  const manager = new CodexBridgeManager(runtime, undefined, { ...config(), sessionIdleMs: 30 })
+  await collect(manager.stream({
+    provider: 'codex-cli', model: 'gpt-test', sessionId: 'dispose-a', messages: [userMessage('a')],
+  }))
+  await collect(manager.stream({
+    provider: 'codex-cli', model: 'gpt-test', sessionId: 'dispose-b', messages: [userMessage('b')],
+  }))
+  await manager.dispose()
+  assert.equal(runtime.handles.length, 2)
+  assert.deepEqual(runtime.handles.map(handle => handle.isClosed()), [true, true])
+  await new Promise(resolve => setTimeout(resolve, 50))
+  assert.deepEqual(runtime.handles.map(handle => handle.isClosed()), [true, true])
 })

@@ -37,6 +37,12 @@ stateDiagram-v2
     Failed --> [*]
 ```
 
+Every retained session receives an unref'd idle timer after a stream releases
+it. Reuse cancels that timer before setting the session busy and arms a new
+deadline after the stream finishes. Disposal clears the timer before stopping
+the process. The request-time idle sweep remains as a defensive check, but
+cleanup no longer depends on a future request reaching the bridge.
+
 An aborted DSH stream does not make the session reusable immediately. The
 bridge first waits for the `turn/interrupt` response and the matching terminal
 `turn/completed` event. If either boundary misses the configured process grace
