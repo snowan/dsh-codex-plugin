@@ -120,6 +120,9 @@ test('streams Codex text and disjoint token usage as a DSH response', async () =
   })
   assert.equal(chunks.at(-1)?.type, 'finish')
   assert.equal(chunks.at(-1)?.reason.kind, 'stop')
+  assert.equal(chunks.at(-1)?.replayState?.response?.protocol, 'dsh-codex/1')
+  assert.equal(chunks.at(-1)?.replayState?.response?.threadId, 'thread-1')
+  assert.equal(chunks.at(-1)?.replayState?.blocks, undefined)
   await manager.dispose()
 })
 
@@ -153,6 +156,7 @@ test('returns a DSH tool call, accepts its result, and resumes the same Codex tu
     messages: [userMessage('read package.json')],
   }))
   assert.equal(first.at(-1)?.reason.kind, 'tool-calls')
+  assert.deepEqual(first.at(-1)?.replayState?.response?.pendingCallIds, ['call-1'])
   assert.equal(first.find(chunk => chunk.type === 'tool-call-delta')?.name, 'Read')
 
   const second = await collect(manager.stream({

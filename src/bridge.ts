@@ -3,6 +3,7 @@ import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import {
   CallId,
   type GenerateOptions,
+  type ReplayEnvelope,
   type StreamChunk,
   type TokenUsage,
 } from '@deepseek-ai/dsh-llm'
@@ -139,13 +140,15 @@ function tokenUsage(value: TokenBreakdown): TokenUsage {
   }
 }
 
-function replay(state: SessionState): ReplayState {
+function replay(state: SessionState): ReplayEnvelope {
   return {
-    protocol: 'dsh-codex/1',
-    bridgeId: state.bridgeId,
-    threadId: state.threadId,
-    turnId: state.turnId ?? '',
-    ...(state.pending.size === 0 ? {} : { pendingCallIds: [...state.pending.keys()] }),
+    response: {
+      protocol: 'dsh-codex/1',
+      bridgeId: state.bridgeId,
+      threadId: state.threadId,
+      turnId: state.turnId ?? '',
+      ...(state.pending.size === 0 ? {} : { pendingCallIds: [...state.pending.keys()] }),
+    } satisfies ReplayState,
   }
 }
 
