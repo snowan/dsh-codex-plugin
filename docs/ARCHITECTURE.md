@@ -26,6 +26,9 @@ stateDiagram-v2
     Starting --> Running: initialize + thread/start + turn/start
     Running --> WaitingForTool: item/tool/call
     WaitingForTool --> Running: matching DSH tool-result
+    Running --> Interrupting: caller abort
+    Interrupting --> Complete: interrupt response + turn/completed
+    Interrupting --> Failed: timeout or process exit
     Running --> Complete: turn/completed
     Running --> Failed: non-retryable error or process exit
     WaitingForTool --> Failed: missing result or service restart
@@ -33,6 +36,12 @@ stateDiagram-v2
     Complete --> [*]: idle eviction / disposal
     Failed --> [*]
 ```
+
+An aborted DSH stream does not make the session reusable immediately. The
+bridge first waits for the `turn/interrupt` response and the matching terminal
+`turn/completed` event. If either boundary misses the configured process grace
+period, the bridge invalidates that App Server instead of risking a second
+`turn/start` against a still-active turn.
 
 ## Tool identity
 
