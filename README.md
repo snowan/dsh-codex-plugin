@@ -118,7 +118,7 @@ profile's `cordis.patch.yml`:
 | `allowCodexNativeTools` | `false` | Keep actions on DSH's dynamic-tool plane |
 | `contextWindow` | `200000` | Conservative capacity advertised to DSH |
 | `modelCacheMs` | `300000` | Codex model-list cache lifetime |
-| `sessionIdleMs` | `900000` | Inactive session process lifetime |
+| `sessionIdleMs` | `900000` | Deadline before an inactive session process is terminated |
 | `disposeGraceMs` | `3000` | Grace before subprocess termination escalates |
 
 ## Diagnose

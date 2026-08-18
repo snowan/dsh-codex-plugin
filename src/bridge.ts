@@ -71,6 +71,7 @@ interface SessionState {
   interrupting: boolean
   turnCount: number
   lastUsedAt: number
+  idleTimer?: ReturnType<typeof setTimeout>
 }
 
 interface ThreadStartResponse {
@@ -191,6 +192,7 @@ export class CodexBridgeManager {
       if (options.sessionId !== undefined) this.#sessions.set(key, state)
     }
     if (state.busy) throw new Error(`Concurrent Codex calls are not supported for DSH session ${key}`)
+    this.#clearIdleTimer(state)
     state.busy = true
     state.lastUsedAt = Date.now()
     try {
@@ -227,16 +229,13 @@ export class CodexBridgeManager {
       state.busy = false
       state.lastUsedAt = Date.now()
       if (options.sessionId === undefined) await this.#disposeState(key, state)
+      else if (this.#sessions.get(key) === state && !state.client.closed) this.#armIdleTimer(key, state)
     }
   }
 
   async dispose(): Promise<void> {
     const entries = [...this.#sessions.entries()]
-    this.#sessions.clear()
-    await Promise.all(entries.map(async ([, state]) => {
-      state.client.terminate()
-      await state.client.waitForExit().catch(() => false)
-    }))
+    await Promise.all(entries.map(([key, state]) => this.#disposeState(key, state)))
   }
 
   async #startSession(options: GenerateOptions): Promise<SessionState> {
@@ -473,7 +472,26 @@ export class CodexBridgeManager {
     }
   }
 
+  #clearIdleTimer(state: SessionState): void {
+    if (state.idleTimer === undefined) return
+    clearTimeout(state.idleTimer)
+    delete state.idleTimer
+  }
+
+  #armIdleTimer(key: string, state: SessionState): void {
+    this.#clearIdleTimer(state)
+    const timer = setTimeout(() => {
+      if (state.idleTimer !== timer) return
+      delete state.idleTimer
+      if (this.#sessions.get(key) !== state || state.busy || state.interrupting) return
+      void this.#disposeState(key, state)
+    }, this.config.sessionIdleMs)
+    timer.unref()
+    state.idleTimer = timer
+  }
+
   async #disposeState(key: string, state: SessionState): Promise<void> {
+    this.#clearIdleTimer(state)
     if (this.#sessions.get(key) === state) this.#sessions.delete(key)
     state.client.terminate()
     await state.client.waitForExit().catch(() => false)
