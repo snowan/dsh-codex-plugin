@@ -445,9 +445,21 @@ test('invalidates an App Server that does not acknowledge interruption', async (
   })
   const manager = new CodexBridgeManager(runtime, undefined, { ...config(), disposeGraceMs: 20 })
   const startedAt = performance.now()
-  const chunks = await collect(manager.stream({
-    provider: 'codex-cli', model: 'gpt-test', sessionId: 'interrupt-timeout', signal: abort.signal, messages: [userMessage('one')],
-  }))
+  let testDeadline
+  const deadline = new Promise((_, reject) => {
+    testDeadline = setTimeout(() => reject(new Error('interrupt timeout test exceeded 500ms')), 500)
+  })
+  let chunks
+  try {
+    chunks = await Promise.race([
+      collect(manager.stream({
+        provider: 'codex-cli', model: 'gpt-test', sessionId: 'interrupt-timeout', signal: abort.signal, messages: [userMessage('one')],
+      })),
+      deadline,
+    ])
+  } finally {
+    clearTimeout(testDeadline)
+  }
   const elapsed = performance.now() - startedAt
   assert.equal(chunks.at(-1)?.reason.kind, 'aborted')
   assert.equal(runtime.handles[0].isClosed(), true)
