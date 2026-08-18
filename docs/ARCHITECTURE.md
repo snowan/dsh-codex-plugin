@@ -68,6 +68,13 @@ invalidates the closed session and returns `CODEX_SESSION_LOST` with the pending
 call ids. A later clean request can then start a fresh thread without reusing
 the closed transport.
 
+## Workspace selection
+
+When a session starts, the bridge gives Codex the request's optional workspace
+and otherwise uses the configured `cwd`. A retained Codex thread keeps that
+initial directory; DSH session workspaces are immutable, while independent
+sessions can start App Servers in different directories.
+
 ## Safety boundary
 
 The child process is started by `ctx.subprocess`, not raw `child_process`, so

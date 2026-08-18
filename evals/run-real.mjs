@@ -90,6 +90,7 @@ try {
     provider: 'codex-cli',
     model,
     sessionId: 'eval-basic',
+    cwd: process.cwd(),
     system: 'Follow the output format exactly.',
     messages: [userMessage('basic-user', 'Reply with exactly: DSH_CODEX_OK')],
   }))
@@ -118,6 +119,7 @@ try {
     provider: 'codex-cli',
     model,
     sessionId: 'eval-tool',
+    cwd: process.cwd(),
     tools,
     messages: [initialUser],
   }))
@@ -128,6 +130,7 @@ try {
       provider: 'codex-cli',
       model,
       sessionId: 'eval-tool',
+      cwd: process.cwd(),
       tools,
       messages: [
         initialUser,
