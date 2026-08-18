@@ -22,8 +22,8 @@ of another DSH Codex plugin. See [Independent implementation](docs/INDEPENDENCE.
 - DSH bundle install that switches new agents to `codex-cli`
 - Managed subprocess cleanup, cancellation, and idle-session eviction
 
-Validated with DSH `0.1.0-rc.6` and Codex CLI `0.147.0`. See the
-[evaluation report](evals/REPORT-2026-08-17.md).
+Validated with DSH `0.1.0-rc.7` and Codex CLI `0.147.0`. See the
+[latest evaluation report](evals/REPORT-2026-08-18-RC7.md).
 
 ## How it works
 
