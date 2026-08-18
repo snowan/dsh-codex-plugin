@@ -68,6 +68,7 @@ interface SessionState {
   tools: string
   pending: Map<string, PendingTool>
   busy: boolean
+  interrupting: boolean
   turnCount: number
   lastUsedAt: number
 }
@@ -199,14 +200,25 @@ export class CodexBridgeManager {
         const input = state.turnCount === 0
           ? await firstTurnInput(options, this.attachments)
           : await nextTurnInput(options, this.attachments)
-        const started = await state.client.request<TurnStartResponse>('turn/start', {
-          threadId: state.threadId,
-          input,
-          model: options.model,
-          ...(options.reasoningEffort === undefined ? {} : { effort: options.reasoningEffort }),
-          environments: [],
-          approvalPolicy: 'never',
-        }, options.signal)
+        let started: TurnStartResponse
+        try {
+          started = await state.client.request<TurnStartResponse>('turn/start', {
+            threadId: state.threadId,
+            input,
+            model: options.model,
+            ...(options.reasoningEffort === undefined ? {} : { effort: options.reasoningEffort }),
+            environments: [],
+            approvalPolicy: 'never',
+          }, options.signal)
+        } catch (error) {
+          if (options.signal?.aborted !== true) throw error
+          await this.#disposeState(key, state)
+          yield {
+            type: 'finish',
+            reason: { kind: 'aborted', failure: { message: 'Codex turn aborted before start completed', code: 'ABORTED' } },
+          }
+          return
+        }
         state.turnId = started.turn.id
         state.turnCount += 1
       }
@@ -251,6 +263,7 @@ export class CodexBridgeManager {
         tools: toolSignature(options.tools),
         pending: new Map(),
         busy: false,
+        interrupting: false,
         turnCount: 0,
         lastUsedAt: Date.now(),
       }
@@ -274,6 +287,43 @@ export class CodexBridgeManager {
         success: result.isError !== true,
       })
       state.pending.delete(result.toolCallId)
+    }
+  }
+
+  async #interruptTurn(key: string, state: SessionState): Promise<void> {
+    const turnId = state.turnId
+    if (turnId === undefined) {
+      await this.#disposeState(key, state)
+      return
+    }
+
+    state.interrupting = true
+    const timeout = new AbortController()
+    const timer = setTimeout(() => {
+      timeout.abort(new Error(`Codex turn interrupt timed out after ${this.config.disposeGraceMs}ms`))
+    }, this.config.disposeGraceMs)
+    timer.unref()
+    try {
+      await state.client.request('turn/interrupt', { threadId: state.threadId, turnId }, timeout.signal)
+      for (;;) {
+        const event = await state.client.nextEvent(timeout.signal)
+        if (event.type === 'closed') throw sessionLost(state)
+        if (event.type === 'protocol-error') throw sessionLost(state, event.error)
+        if (event.type === 'request') {
+          state.client.respondError(event.value.id, -32800, 'DSH interrupted the active Codex turn')
+          continue
+        }
+        if (event.value.method !== 'turn/completed') continue
+        const params = paramsOf<TurnCompletedParams>(event)
+        if (params === undefined || params.turn.id !== turnId || params.turn.status === 'inProgress') continue
+        delete state.turnId
+        return
+      }
+    } catch {
+      await this.#disposeState(key, state)
+    } finally {
+      clearTimeout(timer)
+      state.interrupting = false
     }
   }
 
@@ -304,9 +354,7 @@ export class CodexBridgeManager {
         event = await state.client.nextEvent(options.signal)
       } catch (error) {
         if (options.signal?.aborted === true) {
-          if (state.turnId !== undefined) {
-            state.client.request('turn/interrupt', { threadId: state.threadId, turnId: state.turnId }).catch(() => undefined)
-          }
+          await this.#interruptTurn(key, state)
           for (const chunk of closeBlocks()) yield chunk
           yield {
             type: 'finish',
@@ -421,7 +469,7 @@ export class CodexBridgeManager {
   #evictIdle(): void {
     const cutoff = Date.now() - this.config.sessionIdleMs
     for (const [key, state] of this.#sessions) {
-      if (!state.busy && state.lastUsedAt < cutoff) void this.#disposeState(key, state)
+      if (!state.busy && !state.interrupting && state.lastUsedAt < cutoff) void this.#disposeState(key, state)
     }
   }
 

@@ -44,6 +44,7 @@ function scriptedRuntime(script) {
         done,
         terminate: () => close(),
         crash: () => close(1),
+        isClosed: () => closed,
         async waitForExit() { return true },
       }
       handles.push(handle)
@@ -385,5 +386,88 @@ test('invalidates a closed pending-tool session with a stable session-loss error
   }))
   assert.equal(recovered.at(-1)?.reason.kind, 'stop')
   assert.equal(runtime.handles.length, 2)
+  await manager.dispose()
+})
+
+test('waits for interrupt acknowledgement and terminal completion before reusing a session', async () => {
+  const abort = new AbortController()
+  let turnNumber = 0
+  let interruptCompleted = false
+  const runtime = scriptedRuntime((message, send) => {
+    if (message.method === 'initialize') send({ id: message.id, result: { userAgent: 'fake' } })
+    if (message.method === 'thread/start') send({ id: message.id, result: { thread: { id: 'thread-interrupt' }, model: 'gpt-test' } })
+    if (message.method === 'turn/start') {
+      turnNumber += 1
+      const turnId = `turn-interrupt-${turnNumber}`
+      send({ id: message.id, result: { turn: { id: turnId } } })
+      if (turnNumber === 1) queueMicrotask(() => abort.abort(new Error('cancelled by test')))
+      else queueMicrotask(() => send({
+        method: 'turn/completed',
+        params: { threadId: 'thread-interrupt', turn: { id: turnId, status: 'completed', error: null } },
+      }))
+    }
+    if (message.method === 'turn/interrupt') {
+      setTimeout(() => {
+        send({ id: message.id, result: {} })
+        send({
+          method: 'turn/completed',
+          params: { threadId: 'thread-interrupt', turn: { id: 'turn-interrupt-1', status: 'interrupted', error: null } },
+        })
+        interruptCompleted = true
+      }, 20)
+    }
+  })
+  const manager = new CodexBridgeManager(runtime, undefined, config())
+  const first = await collect(manager.stream({
+    provider: 'codex-cli', model: 'gpt-test', sessionId: 'interrupt-ack', signal: abort.signal, messages: [userMessage('one')],
+  }))
+  assert.equal(first.at(-1)?.reason.kind, 'aborted')
+  assert.equal(interruptCompleted, true)
+
+  const second = await collect(manager.stream({
+    provider: 'codex-cli', model: 'gpt-test', sessionId: 'interrupt-ack', messages: [userMessage('two')],
+  }))
+  assert.equal(second.at(-1)?.reason.kind, 'stop')
+  assert.equal(runtime.handles.length, 1)
+  await manager.dispose()
+})
+
+test('invalidates an App Server that does not acknowledge interruption', async () => {
+  const abort = new AbortController()
+  const runtime = scriptedRuntime((message, send) => {
+    if (message.method === 'initialize') send({ id: message.id, result: { userAgent: 'fake' } })
+    if (message.method === 'thread/start') send({ id: message.id, result: { thread: { id: 'thread-timeout' }, model: 'gpt-test' } })
+    if (message.method === 'turn/start') {
+      send({ id: message.id, result: { turn: { id: 'turn-timeout' } } })
+      queueMicrotask(() => abort.abort(new Error('cancelled by test')))
+    }
+    // Deliberately leave turn/interrupt unanswered.
+  })
+  const manager = new CodexBridgeManager(runtime, undefined, { ...config(), disposeGraceMs: 20 })
+  const startedAt = performance.now()
+  const chunks = await collect(manager.stream({
+    provider: 'codex-cli', model: 'gpt-test', sessionId: 'interrupt-timeout', signal: abort.signal, messages: [userMessage('one')],
+  }))
+  const elapsed = performance.now() - startedAt
+  assert.equal(chunks.at(-1)?.reason.kind, 'aborted')
+  assert.equal(runtime.handles[0].isClosed(), true)
+  assert.equal(elapsed >= 15, true)
+  assert.equal(elapsed < 500, true)
+  await manager.dispose()
+})
+
+test('invalidates the App Server when abort happens before turn/start returns an id', async () => {
+  const abort = new AbortController()
+  const runtime = scriptedRuntime((message, send) => {
+    if (message.method === 'initialize') send({ id: message.id, result: { userAgent: 'fake' } })
+    if (message.method === 'thread/start') send({ id: message.id, result: { thread: { id: 'thread-startup-abort' }, model: 'gpt-test' } })
+    if (message.method === 'turn/start') queueMicrotask(() => abort.abort(new Error('cancelled before turn id')))
+  })
+  const manager = new CodexBridgeManager(runtime, undefined, config())
+  const chunks = await collect(manager.stream({
+    provider: 'codex-cli', model: 'gpt-test', sessionId: 'startup-abort', signal: abort.signal, messages: [userMessage('one')],
+  }))
+  assert.equal(chunks.at(-1)?.reason.kind, 'aborted')
+  assert.equal(runtime.handles[0].isClosed(), true)
   await manager.dispose()
 })
